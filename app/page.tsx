@@ -3,24 +3,38 @@
 import MapClient from "@/components/MapClient";
 import Legend from "@/components/Legend";
 import {
-  Activity,
   MapPin,
   Navigation,
   Zap,
   Shield,
   RefreshCw,
+  Grid3X3,
 } from "lucide-react";
 import { useState, useCallback } from "react";
 
+const RESOLUTION_OPTIONS = [
+  { value: "50", label: "50m", desc: "Ultra-fine" },
+  { value: "100", label: "100m", desc: "Fine" },
+  { value: "200", label: "200m", desc: "Default" },
+  { value: "400", label: "400m", desc: "Medium" },
+  { value: "800", label: "800m", desc: "Coarse" },
+];
+
 export default function Home() {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [resolution, setResolution] = useState("200");
 
-  const handleRefresh = useCallback(async () => {
+  const handleRefresh = useCallback(() => {
     setIsRefreshing(true);
-    // Dispatch event that Map.tsx listens for
     window.dispatchEvent(new Event("refresh-stress-data"));
-    // Visual feedback for 3 seconds minimum
     setTimeout(() => setIsRefreshing(false), 3000);
+  }, []);
+
+  const handleResolutionChange = useCallback((newRes: string) => {
+    setResolution(newRes);
+    window.dispatchEvent(
+      new CustomEvent("change-resolution", { detail: newRes }),
+    );
   }, []);
 
   return (
@@ -41,7 +55,6 @@ export default function Home() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          {/* Refresh button */}
           <button
             onClick={handleRefresh}
             disabled={isRefreshing}
@@ -55,7 +68,6 @@ export default function Home() {
               {isRefreshing ? "Refreshing..." : "Refresh Data"}
             </span>
           </button>
-
           <div className="flex items-center gap-2 rounded-full border border-[#1b2332] bg-[#111827] px-3 py-1.5 text-xs text-zinc-400">
             <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 pulse-live" />
             <span className="font-medium">Live</span>
@@ -93,7 +105,7 @@ export default function Home() {
                   disabled
                   type="text"
                   placeholder="e.g. Park Street"
-                  className="w-full rounded-lg border border-[#1b2332] bg-[#111827] py-2.5 pl-8 pr-4 text-sm text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all disabled:opacity-40"
+                  className="w-full rounded-lg border border-[#1b2332] bg-[#111827] py-2.5 pl-8 pr-4 text-sm text-zinc-300 placeholder:text-zinc-600 outline-none disabled:opacity-40"
                 />
               </div>
             </div>
@@ -114,24 +126,51 @@ export default function Home() {
                   disabled
                   type="text"
                   placeholder="e.g. Salt Lake Sector V"
-                  className="w-full rounded-lg border border-[#1b2332] bg-[#111827] py-2.5 pl-8 pr-4 text-sm text-zinc-300 placeholder:text-zinc-600 outline-none focus:border-emerald-500/50 focus:ring-1 focus:ring-emerald-500/20 transition-all disabled:opacity-40"
+                  className="w-full rounded-lg border border-[#1b2332] bg-[#111827] py-2.5 pl-8 pr-4 text-sm text-zinc-300 placeholder:text-zinc-600 outline-none disabled:opacity-40"
                 />
               </div>
             </div>
 
             <button
               disabled
-              className="mt-3 w-full rounded-lg bg-emerald-500/10 border border-emerald-500/20 py-2.5 text-sm font-semibold text-emerald-400/60 shadow-sm transition-all hover:bg-emerald-500/20 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="mt-3 w-full rounded-lg bg-emerald-500/10 border border-emerald-500/20 py-2.5 text-sm font-semibold text-emerald-400/60 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Find Calmest Route
             </button>
-
             <p className="text-[10px] text-zinc-600 text-center">
               Route comparison coming soon
             </p>
+
+            {/* Resolution Selector */}
+            <div className="mt-4 pt-4 border-t border-[#1b2332]">
+              <div className="flex items-center gap-2 mb-3">
+                <Grid3X3 size={14} className="text-emerald-400" />
+                <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.15em]">
+                  Grid Resolution
+                </span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {RESOLUTION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    onClick={() => handleResolutionChange(opt.value)}
+                    className={`flex flex-col items-center py-2 px-1 rounded-lg border text-xs transition-all ${
+                      resolution === opt.value
+                        ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-400"
+                        : "bg-[#111827] border-[#1b2332] text-zinc-500 hover:border-zinc-600 hover:text-zinc-300"
+                    }`}
+                  >
+                    <span className="font-bold text-[11px]">{opt.label}</span>
+                    <span className="text-[8px] mt-0.5 opacity-70">
+                      {opt.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
-          {/* Info footer */}
+          {/* Footer */}
           <div className="p-4 border-t border-[#1b2332] bg-[#0a0d12]">
             <div className="grid grid-cols-2 gap-3">
               <div className="p-2.5 rounded-lg bg-[#111827] border border-[#1b2332]">
@@ -139,7 +178,7 @@ export default function Home() {
                   Resolution
                 </div>
                 <div className="text-lg font-bold text-emerald-400 font-mono">
-                  100m
+                  {resolution}m
                 </div>
               </div>
               <div className="p-2.5 rounded-lg bg-[#111827] border border-[#1b2332]">

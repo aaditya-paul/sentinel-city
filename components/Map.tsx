@@ -12,8 +12,16 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
-const CELL_SIZE = 0.002; // ~200m grid step in degrees
 const REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+
+// Resolution options in meters → degrees (approximate)
+const RESOLUTIONS: Record<string, number> = {
+  "50": 0.0005,
+  "100": 0.001,
+  "200": 0.002,
+  "400": 0.004,
+  "800": 0.008,
+};
 
 function getStressColor(score: number): string {
   if (score <= 25) return lerpColor([34, 197, 94], [132, 204, 22], score / 25);
@@ -39,7 +47,7 @@ function getStressOpacity(score: number): number {
   return 0.25 + (score / 100) * 0.45;
 }
 
-function buildPopupHTML(p: any, lat: number, lng: number) {
+function buildPopupHTML(p: any, lat: number, lng: number, resLabel: string) {
   const stressColor = getStressColor(p.stress_index);
   const signals = [
     ["🔊 Noise", p.noise_score],
@@ -75,11 +83,9 @@ function buildPopupHTML(p: any, lat: number, lng: number) {
           ${getStressLabel(p.stress_index)}
         </div>
       </div>
-      <div style="border-top:1px solid #1e293b;padding-top:12px;display:grid;gap:8px;">
-        ${bars}
-      </div>
+      <div style="border-top:1px solid #1e293b;padding-top:12px;display:grid;gap:8px;">${bars}</div>
       <div style="margin-top:12px;font-size:9px;color:#475569;text-align:center;">
-        � ${lat.toFixed(4)}°N, ${lng.toFixed(4)}°E · 200m × 200m
+        📍 ${lat.toFixed(4)}°N, ${lng.toFixed(4)}°E · ${resLabel}m × ${resLabel}m
       </div>
     </div>
   `;
@@ -88,115 +94,144 @@ function buildPopupHTML(p: any, lat: number, lng: number) {
 export default function Map() {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
+  const isRemovedRef = useRef(false);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
   const [cellCount, setCellCount] = useState(0);
+  const [resolution, setResolution] = useState("200");
 
-  // Store all rectangle layers so we can remove them
   const rectLayersRef = useRef<L.Rectangle[]>([]);
+  const loadingRef = useRef(false);
 
-  const loadStressData = useCallback(async (collectFresh: boolean) => {
+  const clearRects = useCallback(() => {
     const map = mapInstanceRef.current;
-    if (!map) return;
+    for (const rect of rectLayersRef.current) {
+      try {
+        if (map) map.removeLayer(rect);
+      } catch {}
+    }
+    rectLayersRef.current = [];
+  }, []);
 
-    setIsRefreshing(true);
+  const loadStressData = useCallback(
+    async (collectFresh: boolean, res?: string) => {
+      const map = mapInstanceRef.current;
+      if (!map || isRemovedRef.current || loadingRef.current) return;
 
-    try {
-      if (collectFresh) {
-        try {
-          const collectRes = await fetch("/api/collect-data");
-          const collectData = await collectRes.json();
-          if (collectData.error)
-            console.error("Data collection error:", collectData.error);
-          else console.log("✅ Fresh data collected:", collectData);
-        } catch (e) {
-          console.warn("Data collection failed, using cached data");
+      loadingRef.current = true;
+      setIsRefreshing(true);
+
+      const currentRes = res || resolution;
+      const step = RESOLUTIONS[currentRes] || 0.002;
+
+      try {
+        // Get current map bounds
+        const bounds = map.getBounds();
+        const minLat = bounds.getSouth();
+        const maxLat = bounds.getNorth();
+        const minLng = bounds.getWest();
+        const maxLng = bounds.getEast();
+
+        if (collectFresh) {
+          try {
+            const collectUrl = `/api/collect-data?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}&step=${step}`;
+            const collectRes = await fetch(collectUrl);
+            const collectData = await collectRes.json();
+            if (collectData.error)
+              console.error("Collection error:", collectData.error);
+            else console.log("✅ Collected:", collectData);
+          } catch (e) {
+            console.warn("Collection failed, using cached data");
+          }
         }
-      }
 
-      const res = await fetch("/api/stress-map");
-      const geojson = await res.json();
+        // Fetch data for the visible area
+        const url = `/api/stress-map?minLat=${minLat}&maxLat=${maxLat}&minLng=${minLng}&maxLng=${maxLng}`;
+        const apiRes = await fetch(url);
+        const geojson = await apiRes.json();
 
-      if (geojson.error) {
-        console.error("API error:", geojson.error);
+        if (geojson.error || isRemovedRef.current) {
+          if (geojson.error) console.error("API error:", geojson.error);
+          return;
+        }
+
+        const features = geojson.features || [];
+
+        // Clear old
+        clearRects();
+
+        if (isRemovedRef.current || !mapInstanceRef.current) return;
+
+        // Draw new
+        const halfStep = step / 2;
+        for (const f of features) {
+          if (isRemovedRef.current) break;
+
+          const lng = f.geometry.coordinates[0];
+          const lat = f.geometry.coordinates[1];
+          const p = f.properties;
+
+          const color = getStressColor(p.stress_index);
+          const opacity = getStressOpacity(p.stress_index);
+
+          try {
+            const rect = L.rectangle(
+              [
+                [lat - halfStep, lng - halfStep],
+                [lat + halfStep, lng + halfStep],
+              ],
+              {
+                color: "transparent",
+                weight: 0,
+                fillColor: color,
+                fillOpacity: opacity,
+                interactive: true,
+              },
+            );
+
+            rect.bindPopup(() => buildPopupHTML(p, lat, lng, currentRes), {
+              maxWidth: 320,
+            });
+            rect.on("mouseover", () =>
+              rect.setStyle({
+                weight: 1.5,
+                color,
+                fillOpacity: Math.min(opacity + 0.15, 0.85),
+              }),
+            );
+            rect.on("mouseout", () =>
+              rect.setStyle({
+                weight: 0,
+                color: "transparent",
+                fillOpacity: opacity,
+              }),
+            );
+
+            if (!isRemovedRef.current && mapInstanceRef.current) {
+              rect.addTo(mapInstanceRef.current);
+              rectLayersRef.current.push(rect);
+            }
+          } catch {}
+        }
+
+        setCellCount(features.length);
+        setLastUpdated(
+          new Date().toLocaleTimeString("en-IN", {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        );
+      } catch (err) {
+        console.error("Failed to load stress data:", err);
+      } finally {
+        loadingRef.current = false;
         setIsRefreshing(false);
         setIsLoaded(true);
-        return;
       }
-
-      const features = geojson.features || [];
-
-      // Safety: check map is still valid
-      if (!mapInstanceRef.current) return;
-
-      // Remove old rectangles
-      for (const rect of rectLayersRef.current) {
-        try {
-          map.removeLayer(rect);
-        } catch {}
-      }
-      rectLayersRef.current = [];
-
-      // Draw new rectangles
-      for (const f of features) {
-        const lng = f.geometry.coordinates[0];
-        const lat = f.geometry.coordinates[1];
-        const p = f.properties;
-        const halfStep = CELL_SIZE / 2;
-
-        const color = getStressColor(p.stress_index);
-        const opacity = getStressOpacity(p.stress_index);
-
-        const rect = L.rectangle(
-          [
-            [lat - halfStep, lng - halfStep],
-            [lat + halfStep, lng + halfStep],
-          ],
-          {
-            color: "transparent",
-            weight: 0,
-            fillColor: color,
-            fillOpacity: opacity,
-            interactive: true,
-          },
-        );
-
-        rect.bindPopup(() => buildPopupHTML(p, lat, lng), { maxWidth: 320 });
-
-        rect.on("mouseover", () => {
-          rect.setStyle({
-            weight: 1.5,
-            color,
-            fillOpacity: Math.min(opacity + 0.15, 0.85),
-          });
-        });
-        rect.on("mouseout", () => {
-          rect.setStyle({
-            weight: 0,
-            color: "transparent",
-            fillOpacity: opacity,
-          });
-        });
-
-        rect.addTo(map);
-        rectLayersRef.current.push(rect);
-      }
-
-      setCellCount(features.length);
-      setLastUpdated(
-        new Date().toLocaleTimeString("en-IN", {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-      );
-    } catch (err) {
-      console.error("Failed to load stress data:", err);
-    } finally {
-      setIsRefreshing(false);
-      setIsLoaded(true);
-    }
-  }, []);
+    },
+    [resolution, clearRects],
+  );
 
   // Listen for manual refresh events
   useEffect(() => {
@@ -205,14 +240,27 @@ export default function Map() {
     return () => window.removeEventListener("refresh-stress-data", handler);
   }, [loadStressData]);
 
-  // Init map + auto-refresh
+  // Listen for resolution changes from page
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const newRes = (e as CustomEvent).detail;
+      setResolution(newRes);
+      loadStressData(true, newRes);
+    };
+    window.addEventListener("change-resolution", handler);
+    return () => window.removeEventListener("change-resolution", handler);
+  }, [loadStressData]);
+
+  // Init map
   useEffect(() => {
     if (!mapRef.current || mapInstanceRef.current) return;
+    isRemovedRef.current = false;
 
     const map = L.map(mapRef.current, {
       center: [22.55, 88.35],
       zoom: 12,
       zoomControl: true,
+      preferCanvas: true, // Canvas renderer avoids DOM appendChild issues
     });
 
     mapInstanceRef.current = map;
@@ -227,8 +275,10 @@ export default function Map() {
       },
     ).addTo(map);
 
-    // Load existing data from DB first (fast)
-    loadStressData(false);
+    // Load data for initial view
+    map.whenReady(() => {
+      loadStressData(false);
+    });
 
     // Auto-refresh every 5 minutes
     const interval = setInterval(() => {
@@ -237,6 +287,7 @@ export default function Map() {
 
     return () => {
       clearInterval(interval);
+      isRemovedRef.current = true;
       rectLayersRef.current = [];
       mapInstanceRef.current = null;
       map.remove();
