@@ -15,7 +15,7 @@ const DEFAULT_MAX_LAT = 22.65;
 const DEFAULT_MIN_LNG = 88.28;
 const DEFAULT_MAX_LNG = 88.42;
 const DEFAULT_STEP = 0.002;
-const MAX_CELLS = 10000; // Safety cap
+const MAX_CELLS = 10000000; // Safety cap
 
 async function safeJsonParse(res: Response): Promise<any> {
   const text = await res.text();
